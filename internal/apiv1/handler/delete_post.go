@@ -31,7 +31,7 @@ func (h *DeletePost) Handle(responseWriter http.ResponseWriter, request *http.Re
 		return apiv1.NewServerError(fmt.Errorf("delete post handler, failed to delete post: %w", err))
 	}
 
-	rmqMessage, err := json.Marshal(postMessage{
+	rmqMessage, err := json.Marshal(postFeedRMQMessage{
 		Operation: "remove",
 		PostID:    postID,
 		AuthorID:  authorID,
@@ -40,7 +40,12 @@ func (h *DeletePost) Handle(responseWriter http.ResponseWriter, request *http.Re
 		return apiv1.NewServerError(fmt.Errorf("delete post handler, failed to make rmq message: %w", err))
 	}
 
-	err = h.RMQ.Publish(ctx, "postfeed", rmqMessage)
+	err = h.RMQ.DeclareExchange("postfeed", "fanout")
+	if err != nil {
+		return apiv1.NewServerError(fmt.Errorf("delete post handler, failed to declare rmq exchange: %w", err))
+	}
+
+	err = h.RMQ.Publish(ctx, "postfeed", "", rmqMessage)
 	if err != nil {
 		return apiv1.NewServerError(fmt.Errorf("delete post handler, failed to publish rmq message: %w", err))
 	}

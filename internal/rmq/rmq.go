@@ -15,15 +15,28 @@ type Config struct {
 	Password string
 }
 
-type RMQ struct {
-	config  *Config
-	conn    *amqp.Connection
-	channel *amqp.Channel
+type Exchange struct {
+	Name string
+	Kind string
 }
 
-func New(config *Config) *RMQ {
+type Queue struct {
+	Name string
+}
+
+type RMQ struct {
+	config    *Config
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	exchanges []Exchange
+	queues    []Queue
+}
+
+func New(config *Config, exchanges []Exchange, queues []Queue) *RMQ {
 	return &RMQ{
-		config: config,
+		config:    config,
+		exchanges: exchanges,
+		queues:    queues,
 	}
 }
 
@@ -41,17 +54,61 @@ func (rmq *RMQ) Connect() error {
 	rmq.conn = conn
 	rmq.channel = channel
 
+	for _, exchange := range rmq.exchanges {
+		err := rmq.DeclareExchange(exchange.Name, exchange.Kind)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, queue := range rmq.queues {
+		_, err := rmq.DeclareQueue(queue.Name)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func (rmq *RMQ) Publish(ctx context.Context, exchangeName string, message []byte) error {
-	err := rmq.channel.ExchangeDeclare(exchangeName, "fanout", true, false, false, false, nil)
+func (rmq *RMQ) DeclareExchange(exchangeName, kind string) error {
+	err := rmq.channel.ExchangeDeclare(
+		exchangeName,
+		kind,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
 	if err != nil {
 		return fmt.Errorf("failed do declare rmq exchange %q: %w", exchangeName, err)
 	}
 
-	err = rmq.channel.PublishWithContext(ctx, exchangeName, "", false, false, amqp.Publishing{
-		ContentType: "text/plain",
+	return nil
+}
+
+func (rmq *RMQ) DeclareQueue(queueName string) (amqp.Queue, error) {
+	var queue amqp.Queue
+
+	queue, err := rmq.channel.QueueDeclare(
+		queueName,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		return queue, fmt.Errorf("failed to declare rmq queue: %w", err)
+	}
+
+	return queue, nil
+}
+
+func (rmq *RMQ) Publish(ctx context.Context, exchangeName, routingKey string, message []byte) error {
+	err := rmq.channel.PublishWithContext(ctx, exchangeName, routingKey, false, false, amqp.Publishing{
+		ContentType: "text/json",
 		Body:        message,
 	})
 	if err != nil {
@@ -61,25 +118,25 @@ func (rmq *RMQ) Publish(ctx context.Context, exchangeName string, message []byte
 	return nil
 }
 
-func (rmq *RMQ) Consume(_ context.Context, exchangeName, queueName string) (<-chan amqp.Delivery, error) {
-	err := rmq.channel.ExchangeDeclare(exchangeName, "fanout", true, false, false, false, nil)
+func (rmq *RMQ) BindQueueToExchange(queueName, exchangeName, routingKey string) error {
+	err := rmq.channel.QueueBind(
+		queueName,
+		routingKey,
+		exchangeName,
+		false,
+		nil,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed do declare rmq exchange %q: %w", exchangeName, err)
+		return fmt.Errorf("failed to bind queue %q to exchange %q: %w", queueName, exchangeName, err)
 	}
 
-	queue, err := rmq.channel.QueueDeclare(queueName, true, false, false, false, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to declare rmq queue: %w", err)
-	}
+	return nil
+}
 
-	err = rmq.channel.QueueBind(queue.Name, "", exchangeName, false, nil)
+func (rmq *RMQ) Consume(_ context.Context, queueName string) (<-chan amqp.Delivery, error) {
+	msgs, err := rmq.channel.Consume(queueName, "", false, false, false, false, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to bind queue to exchange: %w", err)
-	}
-
-	msgs, err := rmq.channel.Consume(queue.Name, "", false, false, false, false, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to consume messages from queue %q: %w", queue.Name, err)
+		return nil, fmt.Errorf("failed to consume messages from queue %q: %w", queueName, err)
 	}
 
 	return msgs, nil

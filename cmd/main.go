@@ -122,6 +122,15 @@ func run() error {
 		Port:     envConfig.RMQPort,
 		Username: envConfig.RMQUsername,
 		Password: envConfig.RMQPassword,
+	}, []rmq.Exchange{
+		{
+			Name: "/post/feed/posted",
+			Kind: "direct",
+		},
+	}, []rmq.Queue{
+		{
+			Name: "/post/feed/cache",
+		},
 	})
 
 	if err := rabbitMQ.Connect(); err != nil {
